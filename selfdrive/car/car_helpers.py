@@ -5,6 +5,7 @@ from common.fingerprints import eliminate_incompatible_cars, all_known_cars
 from selfdrive.boardd.boardd import can_list_to_can_capnp
 from selfdrive.swaglog import cloudlog
 import selfdrive.messaging as messaging
+import selfdrive.cp_params as cp_params
 
 
 def get_startup_alert(car_recognized, controller_available):
@@ -134,6 +135,8 @@ def fingerprint(logcan, sendcan):
 
   cloudlog.warning("fingerprinted %s", candidate_cars[0])
   cloudlog.warning("VIN %s", vin)
+
+  cp_params.save({"userCar": candidate_cars[0]})
   return candidate_cars[0], finger, vin
 
 
