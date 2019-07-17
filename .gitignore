@@ -22,13 +22,21 @@ a.out
 *.vcd
 config.json
 clcache
+gas-interceptor
 
 board/obj/
 selfdrive/boardd/boardd
 selfdrive/logcatd/logcatd
+selfdrive/mapd/default_speeds_by_region.json
 selfdrive/proclogd/proclogd
 selfdrive/ui/ui
 selfdrive/test/tests/plant/out
+selfdrive/visiond/visiond
+selfdrive/visiond/visiond-normal
 /src/
+apk/ai.comma.plus.offroad.apk
+openpilot
+selfdrive/data_collection/df-data
+selfdrive/data_collection/gps-data
 
 one

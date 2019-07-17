@@ -1,11 +1,13 @@
 #!/usr/bin/env python
-from cereal import car, log
+from cereal import car
 from common.realtime import sec_since_boot
 from selfdrive.config import Conversions as CV
 from selfdrive.controls.lib.drive_helpers import create_event, EventTypes as ET
 from selfdrive.controls.lib.vehicle_model import VehicleModel
-from selfdrive.car.gm.values import DBC, CAR, STOCK_CONTROL_MSGS, AUDIO_HUD
-from selfdrive.car.gm.carstate import CarState, CruiseButtons, get_powertrain_can_parser
+from selfdrive.car.gm.values import DBC, CAR, STOCK_CONTROL_MSGS, AUDIO_HUD, SUPERCRUISE_CARS, AccState
+from selfdrive.car.gm.carstate import CarState, CruiseButtons, get_powertrain_can_parser, get_chassis_can_parser
+import selfdrive.kegman_conf as kegman
+
 
 try:
   from selfdrive.car.gm.carcontroller import CarController
@@ -21,19 +23,21 @@ class CanBus(object):
 
 class CarInterface(object):
   def __init__(self, CP, sendcan=None):
+    self.angleSteersoffset = float(kegman.conf['angle_steers_offset'])  # deg offset
     self.CP = CP
-
     self.frame = 0
     self.gas_pressed_prev = False
     self.brake_pressed_prev = False
     self.can_invalid_count = 0
     self.acc_active_prev = 0
+    self.cruise_enabled_prev = False
 
     # *** init the major players ***
     canbus = CanBus()
     self.CS = CarState(CP, canbus)
     self.VM = VehicleModel(CP)
     self.pt_cp = get_powertrain_can_parser(CP, canbus)
+    self.ch_cp = get_chassis_can_parser(CP, canbus)
     self.ch_cp_dbc_name = DBC[CP.carFingerprint]['chassis']
 
     # sending if read only is False
@@ -43,7 +47,13 @@ class CarInterface(object):
 
   @staticmethod
   def compute_gb(accel, speed):
-    return float(accel) / 4.0
+    # Ripped from compute_gb_honda in Honda's interface.py. Works well off shelf but may need more tuning
+    creep_brake = 0.0
+    creep_speed = 2.68
+    creep_brake_value = 0.10
+    if speed < creep_speed:
+      creep_brake = (creep_speed - speed) / creep_speed * creep_brake_value
+    return float(accel) / 4.8 - creep_brake
 
   @staticmethod
   def calc_accel_override(a_ego, a_target, v_ego, v_target):
@@ -68,18 +78,18 @@ class CarInterface(object):
 
     if candidate == CAR.VOLT:
       # supports stop and go, but initial engage must be above 18mph (which include conservatism)
-      ret.minEnableSpeed = 18 * CV.MPH_TO_MS
+      ret.minEnableSpeed = 7 * CV.MPH_TO_MS
       # kg of standard extra cargo to count for driver, gas, etc...
-      ret.mass = 1607 + std_cargo
+      ret.mass = 1607. + std_cargo
       ret.safetyModel = car.CarParams.SafetyModels.gm
       ret.wheelbase = 2.69
-      ret.steerRatio = 15.7
+      ret.steerRatio = 16.17 #0.5.10
       ret.steerRatioRear = 0.
       ret.centerToFront = ret.wheelbase * 0.4 # wild guess
 
     elif candidate == CAR.MALIBU:
       # supports stop and go, but initial engage must be above 18mph (which include conservatism)
-      ret.minEnableSpeed = 18 * CV.MPH_TO_MS
+      ret.minEnableSpeed = 7 * CV.MPH_TO_MS
       ret.mass = 1496 + std_cargo
       ret.safetyModel = car.CarParams.SafetyModels.gm
       ret.wheelbase = 2.83
@@ -89,17 +99,17 @@ class CarInterface(object):
 
     elif candidate == CAR.HOLDEN_ASTRA:
       # kg of standard extra cargo to count for driver, gas, etc...
-      ret.mass = 1363 + std_cargo
+      ret.mass = 1363. + std_cargo
       ret.wheelbase = 2.662
       # Remaining parameters copied from Volt for now
       ret.centerToFront = ret.wheelbase * 0.4
       ret.minEnableSpeed = 18 * CV.MPH_TO_MS
       ret.safetyModel = car.CarParams.SafetyModels.gm
-      ret.steerRatio = 15.7
+      ret.steerRatio = 15.75 #0.5.10
       ret.steerRatioRear = 0.
 
     elif candidate == CAR.ACADIA:
-      ret.minEnableSpeed = -1 # engage speed is decided by pcm
+      ret.minEnableSpeed = -1. # engage speed is decided by pcm
       ret.mass = 4353. * CV.LB_TO_KG + std_cargo
       ret.safetyModel = car.CarParams.SafetyModels.gm
       ret.wheelbase = 2.86
@@ -107,9 +117,18 @@ class CarInterface(object):
       ret.steerRatioRear = 0.
       ret.centerToFront = ret.wheelbase * 0.4
 
+    elif candidate == CAR.BUICK_REGAL:
+      ret.minEnableSpeed = 18 * CV.MPH_TO_MS
+      ret.mass = 3779. * CV.LB_TO_KG + std_cargo # (3849+3708)/2
+      ret.safetyModel = car.CarParams.SafetyModels.gm
+      ret.wheelbase = 2.83 #111.4 inches in meters
+      ret.steerRatio = 14.4 # guess for tourx
+      ret.steerRatioRear = 0.
+      ret.centerToFront = ret.wheelbase * 0.4 # guess for tourx
+
     elif candidate == CAR.CADILLAC_ATS:
       ret.minEnableSpeed = 18 * CV.MPH_TO_MS
-      ret.mass = 1601 + std_cargo
+      ret.mass = 1601. + std_cargo
       ret.safetyModel = car.CarParams.SafetyModels.gm
       ret.wheelbase = 2.78
       ret.steerRatio = 15.3
@@ -118,7 +137,7 @@ class CarInterface(object):
 
     elif candidate == CAR.CADILLAC_CT6:
       # engage speed is decided by pcm
-      ret.minEnableSpeed = -1
+      ret.minEnableSpeed = -1.
       # kg of standard extra cargo to count for driver, gas, etc...
       ret.mass = 4016. * CV.LB_TO_KG + std_cargo
       ret.safetyModel = car.CarParams.SafetyModels.cadillac
@@ -153,30 +172,32 @@ class CarInterface(object):
                             ret.mass / mass_civic * \
                             (ret.centerToFront / ret.wheelbase) / (centerToFront_civic / wheelbase_civic)
 
-
     # same tuning for Volt and CT6 for now
-    ret.steerKiBP, ret.steerKpBP = [[0.], [0.]]
-    ret.steerKpV, ret.steerKiV = [[0.2], [0.00]]
-    ret.steerKf = 0.00004   # full torque for 20 deg at 80mph means 0.00007818594
+    ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kpBP = [[0.], [0.]]
+    ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.2], [0.00]]
+    ret.lateralTuning.pid.kf = 0.00004   # full torque for 20 deg at 80mph means 0.00007818594
 
-    ret.steerMaxBP = [0.] # m/s
+    ret.steerMaxBP = [0.]  # m/s
     ret.steerMaxV = [1.]
     ret.gasMaxBP = [0.]
     ret.gasMaxV = [.5]
     ret.brakeMaxBP = [0.]
     ret.brakeMaxV = [1.]
-    ret.longPidDeadzoneBP = [0.]
-    ret.longPidDeadzoneV = [0.]
 
-    ret.longitudinalKpBP = [5., 35.]
-    ret.longitudinalKpV = [2.4, 1.5]
-    ret.longitudinalKiBP = [0.]
-    ret.longitudinalKiV = [0.36]
+
+    ret.longitudinalTuning.kpBP = [0., 5., 55.]
+    ret.longitudinalTuning.kpV = [2., 1., 0.5]
+    ret.longitudinalTuning.kiBP = [0.]
+    ret.longitudinalTuning.kiV = [0.3]
+    ret.longitudinalTuning.deadzoneBP = [0.]
+    ret.longitudinalTuning.deadzoneV = [0.]
+
 
     ret.steerLimitAlert = True
 
     ret.stoppingControl = True
-    ret.startAccel = 0.8
+    # Volt PID controller gets upset in heavy low speed stop-go traffic as startAccel interferes with it.
+    ret.startAccel = 0.0
 
     ret.steerActuatorDelay = 0.1  # Default delay, not measured yet
     ret.steerRateCost = 1.0
@@ -188,7 +209,8 @@ class CarInterface(object):
   def update(self, c):
 
     self.pt_cp.update(int(sec_since_boot() * 1e9), False)
-    self.CS.update(self.pt_cp)
+    self.ch_cp.update(int(sec_since_boot() * 1e9), False)
+    self.CS.update(self.pt_cp, self.ch_cp)
 
     # create message
     ret = car.CarState.new_message()
@@ -211,9 +233,9 @@ class CarInterface(object):
     # brake pedal
     ret.brake = self.CS.user_brake / 0xd0
     ret.brakePressed = self.CS.brake_pressed
-
+    ret.brakeLights = self.CS.frictionBrakesActive
     # steering wheel
-    ret.steeringAngle = self.CS.angle_steers
+    ret.steeringAngle = self.CS.angle_steers + self.angleSteersoffset
 
     # torque and user override. Driver awareness
     # timer resets when the user uses the steering wheel.
@@ -222,15 +244,21 @@ class CarInterface(object):
 
     # cruise state
     ret.cruiseState.available = bool(self.CS.main_on)
-    cruiseEnabled = self.CS.pcm_acc_status != 0
+    cruiseEnabled = self.CS.pcm_acc_status != AccState.OFF
     ret.cruiseState.enabled = cruiseEnabled
-    ret.cruiseState.standstill = self.CS.pcm_acc_status == 4
+    ret.cruiseState.standstill = False
 
     ret.leftBlinker = self.CS.left_blinker_on
     ret.rightBlinker = self.CS.right_blinker_on
     ret.doorOpen = not self.CS.door_all_closed
     ret.seatbeltUnlatched = not self.CS.seatbelt
     ret.gearShifter = self.CS.gear_shifter
+    ret.readdistancelines = self.CS.follow_level
+    ret.genericToggle = False
+    ret.laneDepartureToggle = False
+    ret.distanceToggle = self.CS.follow_level
+    ret.accSlowToggle = False
+    ret.blindspot = self.CS.blind_spot_on
 
     buttonEvents = []
 
@@ -261,6 +289,8 @@ class CarInterface(object):
           be.type = 'accelCruise' # Suppress resume button if we're resuming from stop so we don't adjust speed.
       elif but == CruiseButtons.DECEL_SET:
         be.type = 'decelCruise'
+        if not cruiseEnabled and not self.CS.lkMode:
+          self.CS.lkMode = True
       elif but == CruiseButtons.CANCEL:
         be.type = 'cancel'
       elif but == CruiseButtons.MAIN:
@@ -268,7 +298,19 @@ class CarInterface(object):
       buttonEvents.append(be)
 
     ret.buttonEvents = buttonEvents
-
+    
+    if self.CS.lka_button and self.CS.lka_button != self.CS.prev_lka_button:
+      if self.CS.lkMode:
+        self.CS.lkMode = False
+      else:
+        self.CS.lkMode = True
+        
+    if self.CS.distance_button and self.CS.distance_button != self.CS.prev_distance_button:
+      self.CS.follow_level -= 1
+      if self.CS.follow_level < 1:
+        self.CS.follow_level = 3
+      kegman.save({'lastTrMode': int(self.CS.follow_level)})  # write last distance bar setting to file
+    ret.gasbuttonstatus = self.CS.gasMode
     events = []
     if not self.CS.can_valid:
       self.can_invalid_count += 1
@@ -276,16 +318,28 @@ class CarInterface(object):
         events.append(create_event('commIssue', [ET.NO_ENTRY, ET.IMMEDIATE_DISABLE]))
     else:
       self.can_invalid_count = 0
+
+    if ret.cruiseState.enabled and not self.cruise_enabled_prev:
+      disengage_event = True
+    else:
+      disengage_event = False
+
     if self.CS.steer_error:
       events.append(create_event('steerUnavailable', [ET.NO_ENTRY, ET.IMMEDIATE_DISABLE, ET.PERMANENT]))
     if self.CS.steer_not_allowed:
       events.append(create_event('steerTempUnavailable', [ET.NO_ENTRY, ET.WARNING]))
-    if ret.doorOpen:
+    if ret.doorOpen and disengage_event:
       events.append(create_event('doorOpen', [ET.NO_ENTRY, ET.SOFT_DISABLE]))
-    if ret.seatbeltUnlatched:
+    if ret.seatbeltUnlatched and disengage_event:
       events.append(create_event('seatbeltNotLatched', [ET.NO_ENTRY, ET.SOFT_DISABLE]))
 
-    if self.CS.car_fingerprint in (CAR.VOLT, CAR.MALIBU, CAR.HOLDEN_ASTRA, CAR.ACADIA, CAR.CADILLAC_ATS):
+    if self.CS.car_fingerprint in SUPERCRUISE_CARS:
+      if self.CS.acc_active and not self.acc_active_prev:
+        events.append(create_event('pcmEnable', [ET.ENABLE]))
+      if not self.CS.acc_active:
+        events.append(create_event('pcmDisable', [ET.USER_DISABLE]))
+
+    else:
       if self.CS.brake_error:
         events.append(create_event('brakeUnavailable', [ET.NO_ENTRY, ET.IMMEDIATE_DISABLE, ET.PERMANENT]))
       if not self.CS.gear_shifter_valid:
@@ -308,6 +362,8 @@ class CarInterface(object):
         events.append(create_event('pedalPressed', [ET.PRE_ENABLE]))
       if ret.cruiseState.standstill:
         events.append(create_event('resumeRequired', [ET.WARNING]))
+      if self.CS.pcm_acc_status == AccState.FAULTED:
+        events.append(create_event('controlsFailed', [ET.NO_ENTRY, ET.IMMEDIATE_DISABLE]))
 
       # handle button presses
       for b in ret.buttonEvents:
@@ -318,26 +374,20 @@ class CarInterface(object):
         if b.type == "cancel" and b.pressed:
           events.append(create_event('buttonCancel', [ET.USER_DISABLE]))
 
-    if self.CS.car_fingerprint == CAR.CADILLAC_CT6:
-
-      if self.CS.acc_active and not self.acc_active_prev:
-        events.append(create_event('pcmEnable', [ET.ENABLE]))
-      if not self.CS.acc_active:
-        events.append(create_event('pcmDisable', [ET.USER_DISABLE]))
-
     ret.events = events
 
     # update previous brake/gas pressed
     self.acc_active_prev = self.CS.acc_active
     self.gas_pressed_prev = ret.gasPressed
     self.brake_pressed_prev = ret.brakePressed
+    self.cruise_enabled_prev = ret.cruiseState.enabled
 
     # cast to reader so it can't be modified
     return ret.as_reader()
 
   # pass in a car.CarControl
   # to be called @ 100hz
-  def apply(self, c, perception_state=log.Live20Data.new_message()):
+  def apply(self, c):
     hud_v_cruise = c.hudControl.setSpeed
     if hud_v_cruise > 70:
       hud_v_cruise = 0

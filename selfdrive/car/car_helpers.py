@@ -1,10 +1,14 @@
 import os
 import time
+import json
 from common.basedir import BASEDIR
 from common.realtime import sec_since_boot
 from common.fingerprints import eliminate_incompatible_cars, all_known_cars
 from selfdrive.swaglog import cloudlog
 import selfdrive.messaging as messaging
+import selfdrive.crash as crash
+from common.params import Params
+import selfdrive.kegman_conf as kegman
 
 def load_interfaces(x):
   ret = {}
@@ -39,12 +43,35 @@ def _get_interface_names():
 interfaces = load_interfaces(_get_interface_names())
 
 
+# BOUNTY: every added fingerprint in selfdrive/car/*/values.py is a $100 coupon code on shop.comma.ai
 # **** for use live only ****
 def fingerprint(logcan, timeout):
   if os.getenv("SIMULATOR2") is not None:
     return ("simulator2", None)
   elif os.getenv("SIMULATOR") is not None:
     return ("simulator", None)
+
+  params = Params()
+
+  cached_fingerprint = params.get('CachedFingerprint')
+  if cached_fingerprint is not None and kegman.get("useCarCaching", True):  # if we previously identified a car and fingerprint and user hasn't disabled caching
+    cached_fingerprint = json.loads(cached_fingerprint)
+    try:
+      with open("/data/kegman.json", "r") as f:
+        cloudlog.warning(str(f.read()))
+    except:
+      pass
+    try:
+      with open("/data/params/d/ControlsParams", "r") as f:
+        cloudlog.warning(f.read())
+    except:
+      pass
+    try:
+      with open("/data/params/d/LiveParameters", "r") as f:
+        cloudlog.warning(f.read())
+    except:
+      pass
+    return (str(cached_fingerprint[0]), {long(key): value for key, value in cached_fingerprint[1].items()})  # not sure if dict of longs is required
 
   cloudlog.warning("waiting for fingerprint...")
   candidate_cars = all_known_cars()
@@ -79,8 +106,25 @@ def fingerprint(logcan, timeout):
       return None, finger
 
     time.sleep(0.01)
-
+  try:
+    with open("/data/kegman.json", "r") as f:
+      cloudlog.warning(str(f.read()))
+  except:
+    pass
+  try:
+    with open("/data/params/d/ControlsParams", "r") as f:
+      cloudlog.warning(f.read())
+  except:
+    pass
+  try:
+    with open("/data/params/d/LiveParameters", "r") as f:
+      cloudlog.warning(f.read())
+  except:
+    pass
+  
   cloudlog.warning("fingerprinted %s", candidate_cars[0])
+
+  params.put("CachedFingerprint", json.dumps([candidate_cars[0], {int(key): value for key, value in finger.items()}]))  # probably can remove long to int conversion
   return (candidate_cars[0], finger)
 
 
@@ -95,7 +139,13 @@ def get_car(logcan, sendcan=None, passive=True):
       candidate = "mock"
     else:
       return None, None
-
+  else:
+    cloudlog.warning("car does match fingerprint: %r", fingerprints)
+    try:
+      crash.capture_warning("fingerprinted %s" % candidate)
+    except:  # fixes occasional travis errors
+      pass
+    
   interface_cls = interfaces[candidate]
 
   if interface_cls is None:

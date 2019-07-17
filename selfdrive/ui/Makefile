@@ -10,8 +10,8 @@ WARN_FLAGS = -Werror=implicit-function-declaration \
              -Werror=return-type \
              -Werror=format-extra-args
 
-CFLAGS = -std=gnu11 -g -fPIC -O2 $(WARN_FLAGS)
-CXXFLAGS = -std=c++11 -g -fPIC -O2 $(WARN_FLAGS)
+CFLAGS = -std=gnu11 -fPIC -O2 $(WARN_FLAGS)
+CXXFLAGS = -std=c++11 -fPIC -O2 $(WARN_FLAGS)
 
 ZMQ_FLAGS = -I$(PHONELIBS)/zmq/aarch64/include
 ZMQ_LIBS = -L$(PHONELIBS)/zmq/aarch64/lib \
@@ -20,7 +20,7 @@ ZMQ_LIBS = -L$(PHONELIBS)/zmq/aarch64/lib \
 
 CEREAL_CFLAGS = -I$(PHONELIBS)/capnp-c/include
 CEREAL_LIBS = -L$(PHONELIBS)/capnp-c/aarch64/lib -l:libcapn.a
-CEREAL_OBJS = ../../cereal/gen/c/log.capnp.o
+CEREAL_OBJS = ../../cereal/gen/c/log.capnp.o ../../cereal/gen/c/ui.capnp.o
 
 NANOVG_FLAGS = -I$(PHONELIBS)/nanovg
 JSON_FLAGS = -I$(PHONELIBS)/json/src

@@ -1,8 +1,11 @@
-from selfdrive.car.hyundai.values import DBC
+from selfdrive.car.hyundai.values import DBC, STEER_THRESHOLD
 from selfdrive.can.parser import CANParser
 from selfdrive.config import Conversions as CV
 from common.kalman.simple_kalman import KF1D
 import numpy as np
+#from common.numpy_fast import interp
+from selfdrive.car.modules.UIBT_module import UIButtons,UIButton
+from selfdrive.car.modules.UIEV_module import UIEvents
 
 
 def get_can_parser(CP):
@@ -50,6 +53,7 @@ def get_can_parser(CP):
     ("CF_Clu_InhibitR", "CLU15", 0),
 
     ("CF_Lvr_Gear","LVR12",0),
+    ("CUR_GR", "TCU12",0),
 
     ("ACCEnable", "TCS13", 0),
     ("ACC_REQ", "TCS13", 0),
@@ -123,25 +127,109 @@ def get_camera_parser(CP):
 class CarState(object):
   def __init__(self, CP):
 
+    self.Angle = [0, 5, 10, 15,20,25,30,35,60,100,180,270,500]
+    self.Angle_Speed = [255,160,100,80,70,60,55,50,40,33,27,17,12]
+    #labels for ALCA modes
+    self.alcaLabels = ["MadMax","Normal","Wifey"]
+    self.alcaMode = 0
+    #if (CP.carFingerprint == CAR.MODELS):
+    # ALCA PARAMS
+    # max REAL delta angle for correction vs actuator
+    self.CL_MAX_ANGLE_DELTA_BP = [10., 32., 44.]#[10., 44.]
+    self.CL_MAX_ANGLE_DELTA = [2.0, 0.96, 0.4]
+     # adjustment factor for merging steer angle to actuator; should be over 4; the higher the smoother
+    self.CL_ADJUST_FACTOR_BP = [10., 44.]
+    self.CL_ADJUST_FACTOR = [16. , 8.]
+     # reenrey angle when to let go
+    self.CL_REENTRY_ANGLE_BP = [10., 44.]
+    self.CL_REENTRY_ANGLE = [5. , 5.]
+     # a jump in angle above the CL_LANE_DETECT_FACTOR means we crossed the line
+    self.CL_LANE_DETECT_BP = [10., 44.]
+    self.CL_LANE_DETECT_FACTOR = [1.3, 1.3]
+    self.CL_LANE_PASS_BP = [10., 20., 44.]
+    self.CL_LANE_PASS_TIME = [40.,10., 3.] 
+     # change lane delta angles and other params
+    self.CL_MAXD_BP = [10., 32., 44.]
+    self.CL_MAXD_A = [.358, 0.084, 0.042] #delta angle based on speed; needs fine tune, based on Tesla steer ratio of 16.75
+    self.CL_MIN_V = 8.9 # do not turn if speed less than x m/2; 20 mph = 8.9 m/s
+     # do not turn if actuator wants more than x deg for going straight; this should be interp based on speed
+    self.CL_MAX_A_BP = [10., 44.]
+    self.CL_MAX_A = [10., 10.] 
+     # define limits for angle change every 0.1 s
+    # we need to force correction above 10 deg but less than 20
+    # anything more means we are going to steep or not enough in a turn
+    self.CL_MAX_ACTUATOR_DELTA = 2.
+    self.CL_MIN_ACTUATOR_DELTA = 0. 
+    self.CL_CORRECTION_FACTOR = [1.3,1.2,1.2]
+    self.CL_CORRECTION_FACTOR_BP = [10., 32., 44.]
+     #duration after we cross the line until we release is a factor of speed
+    self.CL_TIMEA_BP = [10., 32., 44.]
+    self.CL_TIMEA_T = [0.7 ,0.30, 0.20]
+    #duration to wait (in seconds) with blinkers on before starting to turn
+    self.CL_WAIT_BEFORE_START = 1
+    #END OF ALCA PARAMS
+    
     self.CP = CP
 
+    #BB UIEvents
+    self.UE = UIEvents(self)
+
+    #BB variable for custom buttons
+    self.cstm_btns = UIButtons(self,"Hyundai","hyundai")
+
+    #BB pid holder for ALCA
+    self.pid = None
+
+    #BB custom message counter
+    self.custom_alert_counter = 100 #set to 100 for 1 second display; carcontroller will take down to zero
+    
     # initialize can parser
     self.car_fingerprint = CP.carFingerprint
 
+
+
+    
     # vEgo kalman filter
     dt = 0.01
     # Q = np.matrix([[10.0, 0.0], [0.0, 100.0]])
     # R = 1e3
-    self.v_ego_kf = KF1D(x0=np.matrix([[0.0], [0.0]]),
-                         A=np.matrix([[1.0, dt], [0.0, 1.0]]),
-                         C=np.matrix([1.0, 0.0]),
-                         K=np.matrix([[0.12287673], [0.29666309]]))
+    self.v_ego_kf = KF1D(x0=[[0.0], [0.0]],
+                         A=[[1.0, dt], [0.0, 1.0]],
+                         C=[1.0, 0.0],
+                         K=[[0.12287673], [0.29666309]])
     self.v_ego = 0.0
     self.left_blinker_on = 0
     self.left_blinker_flash = 0
     self.right_blinker_on = 0
     self.right_blinker_flash = 0
 
+ #BB init ui buttons
+  def init_ui_buttons(self):
+    btns = []
+    btns.append(UIButton("sound", "SND", 0, "", 0))
+    btns.append(UIButton("alca", "ALC", 1, self.alcaLabels[self.alcaMode], 1))
+    btns.append(UIButton("slow", "SLO", 1, "", 2))
+    btns.append(UIButton("lka", "LKA", 1, "", 3))
+    btns.append(UIButton("tr", "TR", 0, "", 4))
+    btns.append(UIButton("gas", "GAS", 0, "", 5))
+    return btns
+
+  #BB update ui buttons
+  def update_ui_buttons(self,id,btn_status):
+    if self.cstm_btns.btns[id].btn_status > 0:
+      if (id == 1) and (btn_status == 0) and self.cstm_btns.btns[id].btn_name=="alca":
+          if self.cstm_btns.btns[id].btn_label2 == self.alcaLabels[self.alcaMode]:
+            self.alcaMode = (self.alcaMode + 1 ) % 3
+          else:
+            self.alcaMode = 0
+          self.cstm_btns.btns[id].btn_label2 = self.alcaLabels[self.alcaMode]
+          self.cstm_btns.hasChanges = True
+      else:
+        self.cstm_btns.btns[id].btn_status = btn_status * self.cstm_btns.btns[id].btn_status
+    else:
+        self.cstm_btns.btns[id].btn_status = btn_status
+
+    
   def update(self, cp, cp_cam):
     # copy can_valid
     self.can_valid = cp.can_valid
@@ -166,22 +254,22 @@ class CarState(object):
     self.v_wheel_fr = cp.vl["WHL_SPD11"]['WHL_SPD_FR'] * CV.KPH_TO_MS
     self.v_wheel_rl = cp.vl["WHL_SPD11"]['WHL_SPD_RL'] * CV.KPH_TO_MS
     self.v_wheel_rr = cp.vl["WHL_SPD11"]['WHL_SPD_RR'] * CV.KPH_TO_MS
-    self.v_wheel = (self.v_wheel_fl + self.v_wheel_fr + self.v_wheel_rl + self.v_wheel_rr) / 4.
+    v_wheel = (self.v_wheel_fl + self.v_wheel_fr + self.v_wheel_rl + self.v_wheel_rr) / 4.
 
-    self.low_speed_lockout = self.v_wheel < 1.0
+    self.low_speed_lockout = v_wheel < 1.0
 
     # Kalman filter, even though Hyundai raw wheel speed is heaviliy filtered by default
-    if abs(self.v_wheel - self.v_ego) > 2.0:  # Prevent large accelerations when car starts at non zero speed
-      self.v_ego_x = np.matrix([[self.v_wheel], [0.0]])
+    if abs(v_wheel - self.v_ego) > 2.0:  # Prevent large accelerations when car starts at non zero speed
+      self.v_ego_kf.x = [[v_wheel], [0.0]]
 
-    self.v_ego_raw = self.v_wheel
-    v_ego_x = self.v_ego_kf.update(self.v_wheel)
+    self.v_ego_raw = v_wheel
+    v_ego_x = self.v_ego_kf.update(v_wheel)
     self.v_ego = float(v_ego_x[0])
     self.a_ego = float(v_ego_x[1])
     is_set_speed_in_mph = int(cp.vl["CLU11"]["CF_Clu_SPEED_UNIT"])
     speed_conv = CV.MPH_TO_MS if is_set_speed_in_mph else CV.KPH_TO_MS
     self.cruise_set_speed = cp.vl["SCC11"]['VSetDis'] * speed_conv
-    self.standstill = not self.v_wheel > 0.1
+    self.standstill = not v_wheel > 0.1
 
     self.angle_steers = cp.vl["SAS11"]['SAS_Angle']
     self.angle_steers_rate = cp.vl["SAS11"]['SAS_Speed']
@@ -191,16 +279,17 @@ class CarState(object):
     self.left_blinker_flash = cp.vl["CGW1"]['CF_Gway_TurnSigLh']
     self.right_blinker_on = cp.vl["CGW1"]['CF_Gway_TSigRHSw']
     self.right_blinker_flash = cp.vl["CGW1"]['CF_Gway_TurnSigRh']
-    self.steer_override = abs(cp.vl["MDPS11"]['CR_Mdps_DrvTq']) > 100.
+    self.steer_override = abs(cp.vl["MDPS11"]['CR_Mdps_DrvTq']) > STEER_THRESHOLD
     self.steer_state = cp.vl["MDPS12"]['CF_Mdps_ToiActive'] #0 NOT ACTIVE, 1 ACTIVE
     self.steer_error = cp.vl["MDPS12"]['CF_Mdps_ToiUnavail']
     self.brake_error = 0
     self.steer_torque_driver = cp.vl["MDPS11"]['CR_Mdps_DrvTq']
     self.steer_torque_motor = cp.vl["MDPS12"]['CR_Mdps_OutTq']
     self.stopped = cp.vl["SCC11"]['SCCInfoDisplay'] == 4.
-
+    self.blind_spot_on = bool(0)
+    self.read_distance_lines = 2
     self.user_brake = 0
-
+    self.acc_slow_on = False
     self.brake_pressed = cp.vl["TCS13"]['DriverBraking']
     self.brake_lights = bool(self.brake_pressed)
     if (cp.vl["TCS13"]["DriverOverride"] == 0 and cp.vl["TCS13"]['ACC_REQ'] == 1):
@@ -233,6 +322,17 @@ class CarState(object):
       self.gear_shifter_cluster = "reverse"
     else:
       self.gear_shifter_cluster = "unknown"
+
+    # Gear Selecton via TCU12
+    gear2 = cp.vl["TCU12"]["CUR_GR"]
+    if gear2 == 0:
+      self.gear_tcu = "park"
+    elif gear2 == 14:
+      self.gear_tcu = "reverse"
+    elif gear2 > 0 and gear2 < 9:    # unaware of anything over 8 currently
+      self.gear_tcu = "drive"
+    else:
+      self.gear_tcu = "unknown"
 
     # save the entire LKAS11 and CLU11
     self.lkas11 = cp_cam.vl["LKAS11"]

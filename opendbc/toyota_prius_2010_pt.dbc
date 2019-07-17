@@ -166,9 +166,19 @@ BO_ 452 POWERTRAIN: 8 XXX
  SG_ ENGINE_RPM : 7|16@0+ (1,0) [0|65535] "rpm" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
+BO_ 1880 DEBUG: 8 XXX
+ SG_ BLINDSPOTSIDE : 7|8@0+ (1,0) [0|255] "" XXX
+ SG_ BLINDSPOT : 38|1@0+ (1,0) [0|15] "" XXX
+ SG_ BLINDSPOTD1 : 47|8@0+ (1,0) [0|255] "" XXX
+ SG_ BLINDSPOTD2 : 55|8@0+ (1,0) [0|255] "" XXX
+
+BO_ 515 JOEL_ID: 8 XXX
+ SG_ ACC_DISTANCE : 1|2@0+ (1,0) [1|3] "" XXX
+ SG_ LANE_WARNING : 8|1@0+ (1,0) [0|1] "" XXX
+ SG_ ACC_SLOW : 16|1@0+ (1,0) [0|1] "" XXX
 
 
-
+CM_ "CHFFR_METRIC 37 STEER_ANGLE STEER_ANGLE 0.36 180";
 CM_ SG_ 36 ACCEL_Y "unit is tbd";
 CM_ SG_ 36 STEERING_TORQUE "does not seem the steer torque, tbd";
 CM_ SG_ 36 YAW_RATE "verify";
@@ -200,4 +210,3 @@ VAL_ 1042 RIGHT_LINE 3 "orange" 2 "double" 1 "solid" 0 "none" ;
 VAL_ 1042 LEFT_LINE 3 "orange" 2 "double" 1 "solid" 0 "none" ;
 VAL_ 1042 LDA_ALERT 3 "hold with continuous beep" 2 "LDA unavailable" 1 "hold" 0 "none" ;
 VAL_ 1553 UNITS 1 "km" 2 "miles" ;
-CM_ "CHFFR_METRIC 37 STEER_ANGLE STEER_ANGLE 0.36 180";

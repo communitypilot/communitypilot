@@ -12,9 +12,12 @@ from common.params import Params
 from common.realtime import sec_since_boot
 from common.numpy_fast import clip
 from common.filter_simple import FirstOrderFilter
+import selfdrive.kegman_conf as kegman
+import subprocess
+import signal
 
 ThermalStatus = log.ThermalData.ThermalStatus
-CURRENT_TAU = 2.   # 2s time constant
+CURRENT_TAU = 15.   # 15s time constant
 
 def read_tz(x):
   with open("/sys/devices/virtual/thermal/thermal_zone%d/temp" % x) as f:
@@ -46,7 +49,7 @@ def setup_eon_fan():
     bus.write_byte_data(0x21, 0x02, 0x2)   # needed?
     bus.write_byte_data(0x21, 0x04, 0x4)   # manual override source
   except IOError:
-    print "LEON detected"
+    print("LEON detected")
     #os.system("echo 1 > /sys/devices/soc/6a00000.ssusb/power_supply/usb/usb_otg")
     LEON = True
   bus.close()
@@ -105,19 +108,24 @@ def handle_fan(max_cpu_temp, bat_temp, fan_speed):
   return fan_speed
 
 
-def check_car_battery_voltage(should_start, health, charging_disabled):
+def check_car_battery_voltage(should_start, health, charging_disabled, msg):
 
   # charging disallowed if:
   #   - there are health packets from panda, and;
   #   - 12V battery voltage is too low, and;
   #   - onroad isn't started
-  if charging_disabled and (health is None or health.health.voltage > 11500):
+  print health
+
+  if charging_disabled and (health is None or health.health.voltage > (int(kegman.conf['carVoltageMinEonShutdown'])+400)) and msg.thermal.batteryPercent < int(kegman.conf['battChargeMin']):
     charging_disabled = False
     os.system('echo "1" > /sys/class/power_supply/battery/charging_enabled')
-  elif not charging_disabled and health is not None and health.health.voltage < 11000 and not should_start:
+  elif not charging_disabled and (msg.thermal.batteryPercent > int(kegman.conf['battChargeMax']) or (health is not None and health.health.voltage < int(kegman.conf['carVoltageMinEonShutdown']) and not should_start)):
     charging_disabled = True
     os.system('echo "0" > /sys/class/power_supply/battery/charging_enabled')
-
+  elif msg.thermal.batteryCurrent < 0 and msg.thermal.batteryPercent > int(kegman.conf['battChargeMax']):
+    charging_disabled = True
+    os.system('echo "0" > /sys/class/power_supply/battery/charging_enabled')
+    
   return charging_disabled
 
 
@@ -156,7 +164,7 @@ def thermald_thread():
   setup_eon_fan()
 
   # prevent LEECO from undervoltage
-  BATT_PERC_OFF = 10 if LEON else 3
+  BATT_PERC_OFF = int(kegman.conf['battPercOff'])
 
   # now loop
   context = zmq.Context()
@@ -169,12 +177,12 @@ def thermald_thread():
   off_ts = None
   started_ts = None
   ignition_seen = False
-  started_seen = False
+  #started_seen = False
   passive_starter = LocationStarter()
   thermal_status = ThermalStatus.green
   health_sock.RCVTIMEO = 1500
   current_filter = FirstOrderFilter(0., CURRENT_TAU, 1.)
-
+  services_killed = False
   # Make sure charging is enabled
   charging_disabled = False
   os.system('echo "1" > /sys/class/power_supply/battery/charging_enabled')
@@ -188,7 +196,11 @@ def thermald_thread():
     msg = read_thermal()
 
     # loggerd is gated based on free space
-    statvfs = os.statvfs(ROOT)
+    try:
+      statvfs = os.statvfs(ROOT)
+    except OSError:
+      os.mkdir(ROOT)
+      statvfs = os.statvfs(ROOT)
     avail = (statvfs.f_bavail * 1.0)/statvfs.f_blocks
 
     # thermal message now also includes free space
@@ -201,7 +213,7 @@ def thermald_thread():
       msg.thermal.batteryCurrent = int(f.read())
     with open("/sys/class/power_supply/battery/voltage_now") as f:
       msg.thermal.batteryVoltage = int(f.read())
-    with open("/sys/class/power_supply/usb/online") as f:
+    with open("/sys/class/power_supply/usb/present") as f:
       msg.thermal.usbOnline = bool(int(f.read()))
 
     current_filter.update(msg.thermal.batteryCurrent / 1e6)
@@ -278,28 +290,52 @@ def thermald_thread():
       if started_ts is None:
         params.car_start()
         started_ts = sec_since_boot()
-        started_seen = True
+        #started_seen = True
+        os.system('echo performance > /sys/class/devfreq/soc:qcom,cpubw/governor')
     else:
       started_ts = None
       if off_ts is None:
         off_ts = sec_since_boot()
+        os.system('echo powersave > /sys/class/devfreq/soc:qcom,cpubw/governor')
 
       # shutdown if the battery gets lower than 3%, it's discharging, we aren't running for
       # more than a minute but we were running
-      if msg.thermal.batteryPercent < BATT_PERC_OFF and msg.thermal.batteryStatus == "Discharging" and \
-         started_seen and (sec_since_boot() - off_ts) > 60:
-        os.system('LD_LIBRARY_PATH="" svc power shutdown')
+      if msg.thermal.batteryPercent < BATT_PERC_OFF and msg.thermal.batteryCurrent > 0 and \
+         sec_since_boot() > 180:
+         #started_seen and (sec_since_boot() - off_ts) > 60:
+        if msg.thermal.usbOnline:
+          # if there is power through the USB then shutting down just results in an immediate restart so kill services instead (E.g. Nidec)
+          kill_list = ["updated", "gpsd", "logcatd", "pandad", "ui", "uploader", "tombstoned", "logmessaged", "athena", "ai.comma", "boardd"]
+          # Kill processes to save battery cannot shutdown if plugged in because it will just restart after shutdown
+          for process_name in kill_list:
+            proc = subprocess.Popen(["pgrep", process_name], stdout=subprocess.PIPE)
+            for pid in proc.stdout:
+              os.kill(int(pid), signal.SIGTERM)
+        else:
+          # if not just shut it down completely (E.g. Bosch or disconnected)
+          os.system('LD_LIBRARY_PATH="" svc power shutdown')      
 
-    charging_disabled = check_car_battery_voltage(should_start, health, charging_disabled)
+        services_killed = True
 
+    if services_killed:
+      charging_disabled = True
+    else:
+      charging_disabled = check_car_battery_voltage(should_start, health, charging_disabled, msg)
+
+    # need to force batteryStatus because after NEOS update for 0.5.7 this doesn't work properly
+    if msg.thermal.batteryCurrent > 0:
+      msg.thermal.batteryStatus = "Discharging"
+    else:
+      msg.thermal.batteryStatus = "Charging"
+    
     msg.thermal.chargingDisabled = charging_disabled
-    msg.thermal.chargingError = current_filter.x > 1.0   # if current is > 1A out, then charger might be off
+    msg.thermal.chargingError = current_filter.x > 0.   # if current is positive, then battery is being discharged
     msg.thermal.started = started_ts is not None
     msg.thermal.startedTs = int(1e9*(started_ts or 0))
 
     msg.thermal.thermalStatus = thermal_status
     thermal_sock.send(msg.to_bytes())
-    print msg
+    print(msg)
 
     # report to server once per minute
     if (count%60) == 0:

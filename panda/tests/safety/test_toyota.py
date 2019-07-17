@@ -7,13 +7,13 @@ MAX_RATE_UP = 10
 MAX_RATE_DOWN = 25
 MAX_TORQUE = 1500
 
-MAX_ACCEL = 1500
-MIN_ACCEL = -3000
+MAX_ACCEL = 3500
+MIN_ACCEL = -4000
 
 MAX_RT_DELTA = 375
 RT_INTERVAL = 250000
 
-MAX_TORQUE_ERROR = 350
+MAX_TORQUE_ERROR = 1350
 
 IPAS_OVERRIDE_THRESHOLD = 200
 
@@ -117,6 +117,13 @@ class TestToyotaSafety(unittest.TestCase):
 
     a = twos_comp(accel, 16)
     to_send[0].RDLR = (a & 0xFF) << 8 | (a >> 8)
+    return to_send
+
+  def _gas_msg(self, gas):
+    to_send = libpandasafety_py.ffi.new('CAN_FIFOMailBox_TypeDef *')
+    to_send[0].RIR = 0x200 << 21
+    to_send[0].RDLR = gas
+
     return to_send
 
   def test_default_controls_not_allowed(self):
@@ -408,6 +415,13 @@ class TestToyotaSafety(unittest.TestCase):
 
     # reset no angle control at the end of the test
     self.safety.reset_angle_control()
+
+  def test_gas_safety_check(self):
+    self.safety.set_controls_allowed(0)
+    self.assertTrue(self.safety.honda_tx_hook(self._gas_msg(0x0000)))
+    self.assertFalse(self.safety.honda_tx_hook(self._gas_msg(0x1000)))
+    self.safety.set_controls_allowed(1)
+    self.assertTrue(self.safety.honda_tx_hook(self._gas_msg(0x1000)))
 
 
 if __name__ == "__main__":

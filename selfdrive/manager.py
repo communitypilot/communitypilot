@@ -5,10 +5,12 @@ import fcntl
 import errno
 import signal
 import subprocess
+import selfdrive.messaging as messaging
 
 from common.basedir import BASEDIR
 sys.path.append(os.path.join(BASEDIR, "pyextra"))
 os.environ['BASEDIR'] = BASEDIR
+manager_sock = None
 
 def unblock_stdout():
   # get a non-blocking stdout
@@ -41,9 +43,9 @@ def unblock_stdout():
     os._exit(os.wait()[1])
 
 if __name__ == "__main__":
-  if os.path.isfile("/init.qcom.rc") \
-      and (not os.path.isfile("/VERSION") or int(open("/VERSION").read()) < 8):
-
+  neos_update_required = os.path.isfile("/init.qcom.rc") \
+    and (not os.path.isfile("/VERSION") or int(open("/VERSION").read()) < 9)
+  if neos_update_required:
     # update continue.sh before updating NEOS
     if os.path.isfile(os.path.join(BASEDIR, "scripts", "continue.sh")):
       from shutil import copyfile
@@ -54,6 +56,9 @@ if __name__ == "__main__":
     subprocess.check_call(["git", "clean", "-xdf"], cwd=BASEDIR)
     os.system(os.path.join(BASEDIR, "installer", "updater", "updater"))
     raise Exception("NEOS outdated")
+  elif os.path.isdir("/data/neoupdate"):
+    from shutil import rmtree
+    rmtree("/data/neoupdate")
 
   unblock_stdout()
 
@@ -85,9 +90,11 @@ from selfdrive.loggerd.config import ROOT
 managed_processes = {
   "thermald": "selfdrive.thermald",
   "uploader": "selfdrive.loggerd.uploader",
+  "deleter": "selfdrive.loggerd.deleter",
   "controlsd": "selfdrive.controls.controlsd",
+  "plannerd": "selfdrive.controls.plannerd",
   "radard": "selfdrive.controls.radard",
-  "ubloxd": "selfdrive.locationd.ubloxd",
+  "ubloxd": ("selfdrive/locationd", ["./ubloxd"]),
   "mapd": "selfdrive.mapd.mapd",
   "loggerd": ("selfdrive/loggerd", ["./loggerd"]),
   "logmessaged": "selfdrive.logmessaged",
@@ -98,11 +105,25 @@ managed_processes = {
   "pandad": "selfdrive.pandad",
   "ui": ("selfdrive/ui", ["./start.sh"]),
   "calibrationd": "selfdrive.locationd.calibrationd",
+  "locationd": "selfdrive.locationd.locationd_local",
   "visiond": ("selfdrive/visiond", ["./visiond"]),
   "sensord": ("selfdrive/sensord", ["./sensord"]),
   "gpsd": ("selfdrive/sensord", ["./gpsd"]),
-  "orbd": ("selfdrive/orbd", ["./orbd_wrapper.sh"]),
   "updated": "selfdrive.updated",
+  "athena": "selfdrive.athena.athenad",
+}
+# define process name with niceness factor
+mean_processes = {
+  "controlsd": -15,
+  "boardd": -14,
+  "visiond": -13,
+  "plannerd": -12,
+  "loggerd": -11,
+  "radard": -10,
+  "pandad": -9,
+  "locationd": -8,
+  "mapd": -7,
+  "sensord": -6,
 }
 android_packages = ("ai.comma.plus.offroad", "ai.comma.plus.frame")
 
@@ -122,21 +143,24 @@ persistent_processes = [
   'logcatd',
   'tombstoned',
   'uploader',
+  'deleter',
   'ui',
   'gpsd',
   'updated',
+  'athena'
 ]
 
 car_started_processes = [
   'controlsd',
+  'plannerd',
   'loggerd',
   'sensord',
   'radard',
   'calibrationd',
+  'locationd',
   'visiond',
   'proclogd',
   'ubloxd',
-  'orbd',
   'mapd',
 ]
 
@@ -177,6 +201,13 @@ def nativelauncher(pargs, cwd):
 
   os.execvp(pargs[0], pargs)
 
+def send_running_processes():
+  global manager_sock
+  data = messaging.new_message()
+  data.init('managerData')
+  data.managerData.runningProcesses = running.keys()
+  manager_sock.send(data.to_bytes())
+
 def start_managed_process(name):
   if name in running or name not in managed_processes:
     return
@@ -190,6 +221,13 @@ def start_managed_process(name):
     cloudlog.info("starting process %s" % name)
     running[name] = Process(name=name, target=nativelauncher, args=(pargs, cwd))
   running[name].start()
+
+  if name in mean_processes:
+    try:
+      subprocess.call(["renice", "-n", str(mean_processes[name]), str(running[name].pid)])
+    except:
+      cloudlog.warning("failed to renice process %s" % name)
+
 
 def prepare_managed_process(p):
   proc = managed_processes[p]
@@ -249,6 +287,8 @@ def cleanup_all_processes(signal, frame):
 
   for name in list(running.keys()):
     kill_managed_process(name)
+
+  send_running_processes()
   cloudlog.info("everything is dead")
 
 
@@ -300,8 +340,11 @@ def system(cmd):
 
 def manager_thread():
   # now loop
+  global manager_sock
   context = zmq.Context()
-  thermal_sock = messaging.sub_sock(context, service_list['thermal'].port)
+  thermal_sock = messaging.sub_sock(context, service_list['thermal'].port, conflate=True)
+  gps_sock = messaging.sub_sock(context, service_list['gpsLocation'].port, conflate=True)
+  manager_sock = messaging.pub_sock(context, service_list['managerData'].port)
 
   cloudlog.info("manager start")
   cloudlog.info({"environ": os.environ})
@@ -321,18 +364,22 @@ def manager_thread():
 
   params = Params()
   logger_dead = False
-
   while 1:
     # get health of board, log this in "thermal"
     msg = messaging.recv_sock(thermal_sock, wait=True)
-
+    gps = messaging.recv_one_or_none(gps_sock)
+    if gps:
+      if 47.3024876979 < gps.gpsLocation.latitude < 54.983104153 and 5.98865807458 < gps.gpsLocation.longitude < 15.0169958839:
+        logger_dead = True
+      else:
+        logger_dead = False
     # uploader is gated based on the phone temperature
     if msg.thermal.thermalStatus >= ThermalStatus.yellow:
       kill_managed_process("uploader")
     else:
       start_managed_process("uploader")
 
-    if msg.thermal.freeSpace < 0.05:
+    if msg.thermal.freeSpace < 0.18:
       logger_dead = True
 
     if msg.thermal.started:
@@ -350,6 +397,7 @@ def manager_thread():
     for p in running:
       cloudlog.debug("   running %s %s" % (p, running[p]))
 
+    send_running_processes()
     # is this still needed?
     if params.get("DoUninstall") == "1":
       break
@@ -384,7 +432,7 @@ def update_apks():
 
   cloudlog.info("installed apks %s" % (str(installed), ))
 
-  for app in installed.iterkeys():
+  for app in installed.keys():
 
     apk_path = os.path.join(BASEDIR, "apk/"+app+".apk")
     if not os.path.exists(apk_path):
@@ -449,12 +497,13 @@ def main():
     del managed_processes['proclogd']
   if os.getenv("NOCONTROL") is not None:
     del managed_processes['controlsd']
+    del managed_processes['plannerd']
     del managed_processes['radard']
 
   # support additional internal only extensions
   try:
     import selfdrive.manager_extensions
-    selfdrive.manager_extensions.register(register_managed_process)
+    selfdrive.manager_extensions.register(register_managed_process) # pylint: disable=no-member
   except ImportError:
     pass
 

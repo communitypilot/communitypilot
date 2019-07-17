@@ -90,7 +90,7 @@ ALERTS = [
   Alert(
       "steerTempUnavailable",
       "TAKE CONTROL",
-      "Steering Temporarily Unavailable",
+      "Steering Unavailable",
       AlertStatus.userPrompt, AlertSize.mid,
       Priority.LOW, VisualAlert.steerRequired, AudibleAlert.chimeWarning1, .4, 2., 3.),
 
@@ -100,6 +100,13 @@ ALERTS = [
       "Steering Temporarily Unavailable",
       AlertStatus.userPrompt, AlertSize.mid,
       Priority.LOW, VisualAlert.none, AudibleAlert.none, .2, .2, .2),
+
+  Alert(
+      "steerTempUnavailableNoCancel",
+      "TAKE CONTROL SOON",
+      "Steering Temporarily Unavailable",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.LOW, VisualAlert.none, AudibleAlert.none, .4, 2., 3.),
 
   Alert(
       "preDriverDistracted",
@@ -169,7 +176,7 @@ ALERTS = [
       "Be ready to take over at any time",
       "Always keep hands on wheel and eyes on road",
       AlertStatus.normal, AlertSize.mid,
-      Priority.LOW_LOWEST, VisualAlert.none, AudibleAlert.none, 0., 0., 15.),
+      Priority.LOW_LOWEST, VisualAlert.none, AudibleAlert.none, 0., 0., 5.),
 
   Alert(
       "ethicalDilemma",
@@ -624,4 +631,11 @@ ALERTS = [
       "Set 0111 for openpilot. 1011 for stock",
       AlertStatus.normal, AlertSize.mid,
       Priority.LOW_LOWEST, VisualAlert.none, AudibleAlert.none, 0., 0., .2),
+
+  Alert(
+      "vehicleModelInvalid",
+      "Vehicle Parameter Identification Failed",
+      "",
+      AlertStatus.normal, AlertSize.small,
+      Priority.LOWEST, VisualAlert.steerRequired, AudibleAlert.none, .0, .0, .1),
 ]
