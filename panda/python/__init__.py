@@ -1,5 +1,5 @@
 # python library to interface with panda
-from __future__ import print_function
+
 import binascii
 import struct
 import hashlib
@@ -9,21 +9,20 @@ import os
 import time
 import traceback
 import subprocess
-from dfu import PandaDFU
-from esptool import ESPROM, CesantaFlasher
-from flash_release import flash_release
-from update import ensure_st_up_to_date
-from serial import PandaSerial
-from isotp import isotp_send, isotp_recv
+from .dfu import PandaDFU
+from .esptool import ESPROM, CesantaFlasher
+from .flash_release import flash_release
+from .update import ensure_st_up_to_date
+from .serial import PandaSerial
+from .isotp import isotp_send, isotp_recv
 
-__version__ = '0.0.8'
+__version__ = '0.0.9'
 
 BASEDIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../")
 
 DEBUG = os.getenv("PANDADEBUG") is not None
 
 # *** wifi mode ***
-
 def build_st(target, mkfile="Makefile"):
   from panda import BASEDIR
   cmd = 'cd %s && make -f %s clean && make -f %s %s >/dev/null' % (os.path.join(BASEDIR, "board"), mkfile, mkfile, target)
@@ -46,7 +45,7 @@ def parse_can_buffer(dat):
       address = f1 >> 21
     dddat = ddat[8:8+(f2&0xF)]
     if DEBUG:
-      print("  R %x: %s" % (address, str(dddat).encode("hex")))
+      print("  R %x: %s" % (address, binascii.hexlify(dddat)))
     ret.append((address, f2>>16, dddat, (f2>>4)&0xFF))
   return ret
 
@@ -109,20 +108,25 @@ class WifiHandle(object):
 # *** normal mode ***
 
 class Panda(object):
+
+  # matches cereal.car.CarParams.SafetyModel
   SAFETY_NOOUTPUT = 0
   SAFETY_HONDA = 1
   SAFETY_TOYOTA = 2
-  SAFETY_GM = 3
-  SAFETY_HONDA_BOSCH = 4
-  SAFETY_FORD = 5
-  SAFETY_CADILLAC = 6
-  SAFETY_HYUNDAI = 7
-  SAFETY_TESLA = 8
+  SAFETY_ELM327 = 3
+  SAFETY_GM = 4
+  SAFETY_HONDA_BOSCH = 5
+  SAFETY_FORD = 6
+  SAFETY_CADILLAC = 7
+  SAFETY_HYUNDAI = 8
   SAFETY_CHRYSLER = 9
-  SAFETY_TOYOTA_IPAS = 0x1335
-  SAFETY_TOYOTA_NOLIMITS = 0x1336
-  SAFETY_ALLOUTPUT = 0x1337
-  SAFETY_ELM327 = 0xE327
+  SAFETY_TESLA = 10
+  SAFETY_SUBARU = 11
+  SAFETY_GM_PASSIVE = 12
+  SAFETY_MAZDA = 13
+  SAFETY_TOYOTA_IPAS = 16
+  SAFETY_ALLOUTPUT = 17
+  SAFETY_GM_ASCM = 18
 
   SERIAL_DEBUG = 0
   SERIAL_ESP = 1
@@ -134,6 +138,12 @@ class Panda(object):
 
   REQUEST_IN = usb1.ENDPOINT_IN | usb1.TYPE_VENDOR | usb1.RECIPIENT_DEVICE
   REQUEST_OUT = usb1.ENDPOINT_OUT | usb1.TYPE_VENDOR | usb1.RECIPIENT_DEVICE
+
+  HW_TYPE_UNKNOWN = b'\x00'
+  HW_TYPE_WHITE_PANDA = b'\x01'
+  HW_TYPE_GREY_PANDA = b'\x02'
+  HW_TYPE_BLACK_PANDA = b'\x03'
+  HW_TYPE_PEDAL = b'\x04'
 
   def __init__(self, serial=None, claim=True):
     self._serial = serial
@@ -226,16 +236,16 @@ class Panda(object):
   def flash_static(handle, code):
     # confirm flasher is present
     fr = handle.controlRead(Panda.REQUEST_IN, 0xb0, 0, 0, 0xc)
-    assert fr[4:8] == "\xde\xad\xd0\x0d"
+    assert fr[4:8] == b"\xde\xad\xd0\x0d"
 
     # unlock flash
     print("flash: unlocking")
     handle.controlWrite(Panda.REQUEST_IN, 0xb1, 0, 0, b'')
 
-    # erase sectors 1 and 2
+    # erase sectors 1 through 3
     print("flash: erasing")
-    handle.controlWrite(Panda.REQUEST_IN, 0xb2, 1, 0, b'')
-    handle.controlWrite(Panda.REQUEST_IN, 0xb2, 2, 0, b'')
+    for i in range(1, 4):
+      handle.controlWrite(Panda.REQUEST_IN, 0xb2, i, 0, b'')
 
     # flash over EP2
     STEP = 0x10
@@ -268,7 +278,7 @@ class Panda(object):
       fn = os.path.join(BASEDIR, "board", fn)
 
     if code is None:
-      with open(fn) as f:
+      with open(fn, "rb") as f:
         code = f.read()
 
     # get version
@@ -334,13 +344,19 @@ class Panda(object):
   # ******************* health *******************
 
   def health(self):
-    dat = self._handle.controlRead(Panda.REQUEST_IN, 0xd2, 0, 0, 13)
-    a = struct.unpack("IIBBBBB", dat)
-    return {"voltage": a[0], "current": a[1],
-            "started": a[2], "controls_allowed": a[3],
-            "gas_interceptor_detected": a[4],
-            "started_signal_detected": a[5],
-            "started_alt": a[6]}
+    dat = self._handle.controlRead(Panda.REQUEST_IN, 0xd2, 0, 0, 24)
+    a = struct.unpack("IIIIIBBBB", dat)
+    return {
+      "voltage": a[0],
+      "current": a[1],
+      "can_send_errs": a[2],
+      "can_fwd_errs": a[3],
+      "gmlan_send_errs": a[4],
+      "started": a[5],
+      "controls_allowed": a[6],
+      "gas_interceptor_detected": a[7],
+      "car_harness_status": a[8]
+    }
 
   # ******************* control *******************
 
@@ -352,11 +368,19 @@ class Panda(object):
       pass
 
   def get_version(self):
-    return self._handle.controlRead(Panda.REQUEST_IN, 0xd6, 0, 0, 0x40)
+    return self._handle.controlRead(Panda.REQUEST_IN, 0xd6, 0, 0, 0x40).decode('utf8')
+
+  def get_type(self):
+    return self._handle.controlRead(Panda.REQUEST_IN, 0xc1, 0, 0, 0x40)
+
+  def is_white(self):
+    return self.get_type() == Panda.HW_TYPE_WHITE_PANDA
 
   def is_grey(self):
-    ret = self._handle.controlRead(Panda.REQUEST_IN, 0xc1, 0, 0, 0x40)
-    return ret == "\x01"
+    return self.get_type() == Panda.HW_TYPE_GREY_PANDA
+
+  def is_black(self):
+    return self.get_type() == Panda.HW_TYPE_BLACK_PANDA
 
   def get_serial(self):
     dat = self._handle.controlRead(Panda.REQUEST_IN, 0xd0, 0, 0, 0x20)
@@ -387,13 +411,15 @@ class Panda(object):
     self._handle.controlWrite(Panda.REQUEST_OUT, 0xdd, from_bus, to_bus, b'')
 
   def set_gmlan(self, bus=2):
+    # TODO: check panda type
     if bus is None:
       self._handle.controlWrite(Panda.REQUEST_OUT, 0xdb, 0, 0, b'')
     elif bus in [Panda.GMLAN_CAN2, Panda.GMLAN_CAN3]:
       self._handle.controlWrite(Panda.REQUEST_OUT, 0xdb, 1, bus, b'')
 
-  def set_lline_relay(self, enable):
-    self._handle.controlWrite(Panda.REQUEST_OUT, 0xf3, int(enable), 0, b'')
+  def set_obd(self, obd):
+    # TODO: check panda type
+    self._handle.controlWrite(Panda.REQUEST_OUT, 0xdb, int(obd), 0, b'')
 
   def set_can_loopback(self, enable):
     # set can loopback mode for all buses
@@ -407,7 +433,7 @@ class Panda(object):
     self._handle.controlWrite(Panda.REQUEST_OUT, 0xde, bus, int(speed*10), b'')
 
   def set_uart_baud(self, uart, rate):
-    self._handle.controlWrite(Panda.REQUEST_OUT, 0xe4, uart, rate/300, b'')
+    self._handle.controlWrite(Panda.REQUEST_OUT, 0xe4, uart, int(rate/300), b'')
 
   def set_uart_parity(self, uart, parity):
     # parity, 0=off, 1=even, 2=odd
@@ -425,7 +451,7 @@ class Panda(object):
     for addr, _, dat, bus in arr:
       assert len(dat) <= 8
       if DEBUG:
-        print("  W %x: %s" % (addr, dat.encode("hex")))
+        print("  W %x: %s" % (addr, binascii.hexlify(dat)))
       if addr >= 0x800:
         rir = (addr << 3) | transmit | extended
       else:
@@ -457,6 +483,7 @@ class Panda(object):
         break
       except (usb1.USBErrorIO, usb1.USBErrorOverflow):
         print("CAN: BAD RECV, RETRYING")
+        time.sleep(0.1)
     return parse_can_buffer(dat)
 
   def can_clear(self, bus):
@@ -523,7 +550,7 @@ class Panda(object):
       if len(ret) == 0:
         break
       elif DEBUG:
-        print("kline drain: "+str(ret).encode("hex"))
+        print("kline drain: " + binascii.hexlify(ret))
       bret += ret
     return bytes(bret)
 
@@ -532,7 +559,7 @@ class Panda(object):
     while len(echo) != cnt:
       ret = str(self._handle.controlRead(Panda.REQUEST_OUT, 0xe0, bus, 0, cnt-len(echo)))
       if DEBUG and len(ret) > 0:
-        print("kline recv: "+ret.encode("hex"))
+        print("kline recv: " + binascii.hexlify(ret))
       echo += ret
     return str(echo)
 
@@ -549,7 +576,7 @@ class Panda(object):
     for i in range(0, len(x), 0xf):
       ts = x[i:i+0xf]
       if DEBUG:
-        print("kline send: "+ts.encode("hex"))
+        print("kline send: " + binascii.hexlify(ts))
       self._handle.bulkWrite(2, chr(bus).encode()+ts)
       echo = self.kline_ll_recv(len(ts), bus=bus)
       if echo != ts:
@@ -562,3 +589,6 @@ class Panda(object):
     msg = self.kline_ll_recv(2, bus=bus)
     msg += self.kline_ll_recv(ord(msg[1])-2, bus=bus)
     return msg
+
+  def send_heartbeat(self):
+    self._handle.controlWrite(Panda.REQUEST_OUT, 0xf3, 0, 0, b'')

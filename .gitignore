@@ -1,8 +1,10 @@
+venv/
 .DS_Store
 .tags
 .ipynb_checkpoints
 .idea
 .sconsign.dblite
+.vscode
 model2.png
 a.out
 
@@ -29,8 +31,16 @@ selfdrive/logcatd/logcatd
 selfdrive/mapd/default_speeds_by_region.json
 selfdrive/proclogd/proclogd
 selfdrive/ui/ui
-selfdrive/test/tests/plant/out
+selfdrive/test/longitudinal_maneuvers/out
 selfdrive/visiond/visiond
+selfdrive/loggerd/loggerd
+selfdrive/sensord/gpsd
+selfdrive/sensord/sensord
+selfdrive/data_collection/gps-data
 /src/
 
 one
+openpilot
+notebooks
+xx
+

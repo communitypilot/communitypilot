@@ -8,7 +8,7 @@ def make_can_msg(addr, dat, alt):
 
 def create_lkas11(packer, car_fingerprint, apply_steer, steer_req, cnt, enabled, lkas11, hud_alert, keep_stock=False):
   values = {
-    "CF_Lkas_Icon": 3 if enabled else 0,
+    "CF_Lkas_Bca_R": 3 if enabled else 0,
     "CF_Lkas_LdwsSysState": 3 if steer_req else 1,
     "CF_Lkas_SysWarning": hud_alert,
     "CF_Lkas_LdwsLHWarning": lkas11["CF_Lkas_LdwsLHWarning"] if keep_stock else 0,
@@ -34,15 +34,13 @@ def create_lkas11(packer, car_fingerprint, apply_steer, steer_req, cnt, enabled,
 
   if car_fingerprint in CHECKSUM["crc8"]:
     # CRC Checksum as seen on 2019 Hyundai Santa Fe
-    dat = dat[:6] + dat[7]
+    dat = dat[:6] + dat[7:8]
     checksum = hyundai_checksum(dat)
   elif car_fingerprint in CHECKSUM["6B"]:
     # Checksum of first 6 Bytes, as seen on 2018 Kia Sorento
-    dat = [ord(i) for i in dat]
     checksum = sum(dat[:6]) % 256
   elif car_fingerprint in CHECKSUM["7B"]:
     # Checksum of first 6 Bytes and last Byte as seen on 2018 Kia Stinger
-    dat = [ord(i) for i in dat]
     checksum = (sum(dat[:6]) + dat[7]) % 256
 
   values["CF_Lkas_Chksum"] = checksum
@@ -50,15 +48,15 @@ def create_lkas11(packer, car_fingerprint, apply_steer, steer_req, cnt, enabled,
   return packer.make_can_msg("LKAS11", 0, values)
 
 def create_lkas12():
-  return make_can_msg(1342, "\x00\x00\x00\x00\x60\x05", 0)
+  return make_can_msg(1342, b"\x00\x00\x00\x00\x60\x05", 0)
 
 
 def create_1191():
-  return make_can_msg(1191, "\x01\x00", 0)
+  return make_can_msg(1191, b"\x01\x00", 0)
 
 
 def create_1156():
-  return make_can_msg(1156, "\x08\x20\xfe\x3f\x00\xe0\xfd\x3f", 0)
+  return make_can_msg(1156, b"\x08\x20\xfe\x3f\x00\xe0\xfd\x3f", 0)
 
 def create_clu11(packer, clu11, button):
   values = {

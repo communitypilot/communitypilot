@@ -8,7 +8,7 @@
 #define ADCCHAN_VOLTAGE 12
 #define ADCCHAN_CURRENT 13
 
-void adc_init() {
+void adc_init(void) {
   // global setup
   ADC->CCR = ADC_CCR_TSVREFE | ADC_CCR_VBATE;
   //ADC1->CR2 = ADC_CR2_ADON | ADC_CR2_EOCS | ADC_CR2_DDS;
@@ -19,7 +19,7 @@ void adc_init() {
   ADC1->SMPR1 = ADC_SMPR1_SMP12 | ADC_SMPR1_SMP13;
 }
 
-uint32_t adc_get(int channel) {
+uint32_t adc_get(unsigned int channel) {
   // includes length
   //ADC1->SQR1 = 0;
 
@@ -36,3 +36,13 @@ uint32_t adc_get(int channel) {
   return ADC1->JDR1;
 }
 
+uint32_t adc_get_voltage(void) {
+  // REVC has a 10, 1 (1/11) voltage divider
+  // Here is the calculation for the scale (s)
+  // ADCV = VIN_S * (1/11) * (4095/3.3)
+  // RETVAL = ADCV * s = VIN_S*1000
+  // s = 1000/((4095/3.3)*(1/11)) = 8.8623046875
+
+  // Avoid needing floating point math, so output in mV
+  return (adc_get(ADCCHAN_VOLTAGE) * 8862U) / 1000U;
+}

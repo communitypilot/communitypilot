@@ -1,20 +1,29 @@
-#!/usr/bin/env python2.7
+#!/usr/bin/env python3.7
 import os
-import zmq
+import json
+import copy
+import datetime
 from smbus2 import SMBus
 from cereal import log
-from selfdrive.version import training_version
+from common.basedir import BASEDIR
+from common.params import Params
+from common.realtime import sec_since_boot, DT_TRML
+from common.numpy_fast import clip
+from common.filter_simple import FirstOrderFilter
+from selfdrive.version import terms_version, training_version
 from selfdrive.swaglog import cloudlog
 import selfdrive.messaging as messaging
 from selfdrive.services import service_list
-from selfdrive.loggerd.config import ROOT
-from common.params import Params
-from common.realtime import sec_since_boot
-from common.numpy_fast import clip
-from common.filter_simple import FirstOrderFilter
+from selfdrive.loggerd.config import get_available_percent
 
 ThermalStatus = log.ThermalData.ThermalStatus
 CURRENT_TAU = 15.   # 15s time constant
+DAYS_NO_CONNECTIVITY_MAX = 7  # do not allow to engage after a week without internet
+DAYS_NO_CONNECTIVITY_PROMPT = 4  # send an offroad prompt after 4 days with no internet
+
+
+with open(BASEDIR + "/selfdrive/controls/lib/alerts_offroad.json") as json_file:
+  OFFROAD_ALERTS = json.load(json_file)
 
 def read_tz(x):
   with open("/sys/devices/virtual/thermal/thermal_zone%d/temp" % x) as f:
@@ -100,56 +109,9 @@ def handle_fan(max_cpu_temp, bat_temp, fan_speed):
     # no max fan speed unless battery is hot
     fan_speed = min(fan_speed, _FAN_SPEEDS[-2])
 
-  set_eon_fan(fan_speed/16384)
+  set_eon_fan(fan_speed//16384)
 
   return fan_speed
-
-
-def check_car_battery_voltage(should_start, health, charging_disabled):
-
-  # charging disallowed if:
-  #   - there are health packets from panda, and;
-  #   - 12V battery voltage is too low, and;
-  #   - onroad isn't started
-  if charging_disabled and (health is None or health.health.voltage > 11800):
-    charging_disabled = False
-    os.system('echo "1" > /sys/class/power_supply/battery/charging_enabled')
-  elif not charging_disabled and health is not None and health.health.voltage < 11500 and not should_start:
-    charging_disabled = True
-    os.system('echo "0" > /sys/class/power_supply/battery/charging_enabled')
-
-  return charging_disabled
-
-
-class LocationStarter(object):
-  def __init__(self):
-    self.last_good_loc = 0
-  def update(self, started_ts, location):
-    rt = sec_since_boot()
-
-    if location is None or location.accuracy > 50 or location.speed < 2:
-      # bad location, stop if we havent gotten a location in a while
-      # dont stop if we're been going for less than a minute
-      if started_ts:
-        if rt-self.last_good_loc > 60. and rt-started_ts > 60:
-          cloudlog.event("location_stop",
-            ts=rt,
-            started_ts=started_ts,
-            last_good_loc=self.last_good_loc,
-            location=location.to_dict() if location else None)
-          return False
-        else:
-          return True
-      else:
-        return False
-
-    self.last_good_loc = rt
-
-    if started_ts:
-      return True
-    else:
-      cloudlog.event("location_start", location=location.to_dict() if location else None)
-      return location.speed*3.6 > 10
 
 
 def thermald_thread():
@@ -159,25 +121,23 @@ def thermald_thread():
   BATT_PERC_OFF = 10 if LEON else 3
 
   # now loop
-  context = zmq.Context()
-  thermal_sock = messaging.pub_sock(context, service_list['thermal'].port)
-  health_sock = messaging.sub_sock(context, service_list['health'].port)
-  location_sock = messaging.sub_sock(context, service_list['gpsLocation'].port)
+  thermal_sock = messaging.pub_sock(service_list['thermal'].port)
+  health_sock = messaging.sub_sock(service_list['health'].port)
+  location_sock = messaging.sub_sock(service_list['gpsLocation'].port)
   fan_speed = 0
   count = 0
 
   off_ts = None
   started_ts = None
-  ignition_seen = False
   started_seen = False
-  passive_starter = LocationStarter()
   thermal_status = ThermalStatus.green
-  health_sock.RCVTIMEO = 1500
-  current_filter = FirstOrderFilter(0., CURRENT_TAU, 1.)
-
-  # Make sure charging is enabled
-  charging_disabled = False
-  os.system('echo "1" > /sys/class/power_supply/battery/charging_enabled')
+  thermal_status_prev = ThermalStatus.green
+  usb_power = True
+  usb_power_prev = True
+  health_sock.RCVTIMEO = int(1000 * 2 * DT_TRML)  # 2x the expected health frequency
+  current_filter = FirstOrderFilter(0., CURRENT_TAU, DT_TRML)
+  health_prev = None
+  current_connectivity_alert = None
 
   params = Params()
 
@@ -187,9 +147,16 @@ def thermald_thread():
     location = location.gpsLocation if location else None
     msg = read_thermal()
 
+    # clear car params when panda gets disconnected
+    if health is None and health_prev is not None:
+      params.panda_disconnect()
+    health_prev = health
+
+    if health is not None:
+      usb_power = health.health.usbPowerMode != log.HealthData.UsbPowerMode.client
+
     # loggerd is gated based on free space
-    statvfs = os.statvfs(ROOT)
-    avail = (statvfs.f_bavail * 1.0)/statvfs.f_blocks
+    avail = get_available_percent() / 100.0
 
     # thermal message now also includes free space
     msg.thermal.freeSpace = avail
@@ -218,13 +185,13 @@ def thermald_thread():
     if max_cpu_temp > 107. or bat_temp >= 63.:
       # onroad not allowed
       thermal_status = ThermalStatus.danger
-    elif max_comp_temp > 95. or bat_temp > 60.:
+    elif max_comp_temp > 92.5 or bat_temp > 60.: # CPU throttling starts around ~90C
       # hysteresis between onroad not allowed and engage not allowed
       thermal_status = clip(thermal_status, ThermalStatus.red, ThermalStatus.danger)
-    elif max_cpu_temp > 90.0:
+    elif max_cpu_temp > 87.5:
       # hysteresis between engage not allowed and uploader not allowed
       thermal_status = clip(thermal_status, ThermalStatus.yellow, ThermalStatus.red)
-    elif max_cpu_temp > 85.0:
+    elif max_cpu_temp > 80.0:
       # uploader not allowed
       thermal_status = ThermalStatus.yellow
     elif max_cpu_temp > 75.0:
@@ -236,16 +203,37 @@ def thermald_thread():
 
     # **** starting logic ****
 
+    # Check for last update time and display alerts if needed
+    now = datetime.datetime.now()
+    try:
+      last_update = datetime.datetime.fromisoformat(params.get("LastUpdateTime", encoding='utf8'))
+    except (TypeError, ValueError):
+      last_update = now
+    dt = now - last_update
+
+    if dt.days > DAYS_NO_CONNECTIVITY_MAX:
+      if current_connectivity_alert != "expired":
+        current_connectivity_alert = "expired"
+        params.delete("Offroad_ConnectivityNeededPrompt")
+        params.put("Offroad_ConnectivityNeeded", json.dumps(OFFROAD_ALERTS["Offroad_ConnectivityNeeded"]))
+    elif dt.days > DAYS_NO_CONNECTIVITY_PROMPT:
+      remaining_time = str(DAYS_NO_CONNECTIVITY_MAX - dt.days)
+      if current_connectivity_alert != "prompt" + remaining_time:
+        current_connectivity_alert = "prompt" + remaining_time
+        alert_connectivity_prompt = copy.copy(OFFROAD_ALERTS["Offroad_ConnectivityNeededPrompt"])
+        alert_connectivity_prompt["text"] += remaining_time + " days."
+        params.delete("Offroad_ConnectivityNeeded")
+        params.put("Offroad_ConnectivityNeededPrompt", json.dumps(alert_connectivity_prompt))
+    elif current_connectivity_alert is not None:
+      current_connectivity_alert = None
+      params.delete("Offroad_ConnectivityNeeded")
+      params.delete("Offroad_ConnectivityNeededPrompt")
+
     # start constellation of processes when the car starts
     ignition = health is not None and health.health.started
-    ignition_seen = ignition_seen or ignition
 
-    # add voltage check for ignition
-    if not ignition_seen and health is not None and health.health.voltage > 13500:
-      ignition = True
-
-    do_uninstall = params.get("DoUninstall") == "1"
-    accepted_terms = params.get("HasAcceptedTerms") == "1"
+    do_uninstall = params.get("DoUninstall") == b"1"
+    accepted_terms = params.get("HasAcceptedTerms") == terms_version
     completed_training = params.get("CompletedTrainingVersion") == training_version
 
     should_start = ignition
@@ -253,16 +241,8 @@ def thermald_thread():
     # have we seen a panda?
     passive = (params.get("Passive") == "1")
 
-    # start on gps movement if we haven't seen ignition and are in passive mode
-    should_start = should_start or (not (ignition_seen and health) # seen ignition and panda is connected
-                                    and passive
-                                    and passive_starter.update(started_ts, location))
-
     # with 2% left, we killall, otherwise the phone will take a long time to boot
     should_start = should_start and msg.thermal.freeSpace > 0.02
-
-    # require usb power in passive mode
-    should_start = should_start and (not passive or msg.thermal.usbOnline)
 
     # confirm we have completed training and aren't uninstalling
     should_start = should_start and accepted_terms and (passive or completed_training) and (not do_uninstall)
@@ -270,19 +250,24 @@ def thermald_thread():
     # if any CPU gets above 107 or the battery gets above 63, kill all processes
     # controls will warn with CPU above 95 or battery above 60
     if thermal_status >= ThermalStatus.danger:
-      # TODO: Add a better warning when this is happening
       should_start = False
+      if thermal_status_prev < ThermalStatus.danger:
+        params.put("Offroad_TemperatureTooHigh", json.dumps(OFFROAD_ALERTS["Offroad_TemperatureTooHigh"]))
+    else:
+      if thermal_status_prev >= ThermalStatus.danger:
+        params.delete("Offroad_TemperatureTooHigh")
 
     if should_start:
       off_ts = None
       if started_ts is None:
-        params.car_start()
         started_ts = sec_since_boot()
         started_seen = True
+        os.system('echo performance > /sys/class/devfreq/soc:qcom,cpubw/governor')
     else:
       started_ts = None
       if off_ts is None:
         off_ts = sec_since_boot()
+        os.system('echo powersave > /sys/class/devfreq/soc:qcom,cpubw/governor')
 
       # shutdown if the battery gets lower than 3%, it's discharging, we aren't running for
       # more than a minute but we were running
@@ -290,19 +275,25 @@ def thermald_thread():
          started_seen and (sec_since_boot() - off_ts) > 60:
         os.system('LD_LIBRARY_PATH="" svc power shutdown')
 
-    #charging_disabled = check_car_battery_voltage(should_start, health, charging_disabled)
-
-    msg.thermal.chargingDisabled = charging_disabled
-    msg.thermal.chargingError = current_filter.x > 0.   # if current is positive, then battery is being discharged
+    msg.thermal.chargingError = current_filter.x > 0. and msg.thermal.batteryPercent < 90  # if current is positive, then battery is being discharged
     msg.thermal.started = started_ts is not None
     msg.thermal.startedTs = int(1e9*(started_ts or 0))
 
     msg.thermal.thermalStatus = thermal_status
     thermal_sock.send(msg.to_bytes())
+
+    if usb_power_prev and not usb_power:
+      params.put("Offroad_ChargeDisabled", json.dumps(OFFROAD_ALERTS["Offroad_ChargeDisabled"]))
+    elif usb_power and not usb_power_prev:
+      params.delete("Offroad_ChargeDisabled")
+
+    thermal_status_prev = thermal_status
+    usb_power_prev = usb_power
+
     print(msg)
 
     # report to server once per minute
-    if (count%60) == 0:
+    if (count % int(60. / DT_TRML)) == 0:
       cloudlog.event("STATUS_PACKET",
         count=count,
         health=(health.to_dict() if health else None),
@@ -317,4 +308,3 @@ def main(gctx=None):
 
 if __name__ == "__main__":
   main()
-

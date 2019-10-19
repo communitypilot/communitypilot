@@ -1,5 +1,5 @@
-import numpy as np
 from cereal import car
+from common.numpy_fast import mean
 from common.kalman.simple_kalman import KF1D
 from selfdrive.config import Conversions as CV
 from selfdrive.can.parser import CANParser
@@ -49,7 +49,8 @@ def get_powertrain_can_parser(CP, canbus):
 
   return CANParser(DBC[CP.carFingerprint]['pt'], signals, [], canbus.powertrain)
 
-class CarState(object):
+
+class CarState():
   def __init__(self, CP, canbus):
     self.CP = CP
     # initialize can parser
@@ -63,15 +64,13 @@ class CarState(object):
 
     # vEgo kalman filter
     dt = 0.01
-    self.v_ego_kf = KF1D(x0=np.matrix([[0.], [0.]]),
-                         A=np.matrix([[1., dt], [0., 1.]]),
-                         C=np.matrix([1., 0.]),
-                         K=np.matrix([[0.12287673], [0.29666309]]))
+    self.v_ego_kf = KF1D(x0=[[0.], [0.]],
+                         A=[[1., dt], [0., 1.]],
+                         C=[1., 0.],
+                         K=[[0.12287673], [0.29666309]])
     self.v_ego = 0.
 
   def update(self, pt_cp):
-
-    self.can_valid = pt_cp.can_valid
     self.prev_cruise_buttons = self.cruise_buttons
     self.cruise_buttons = pt_cp.vl["ASCMSteeringButton"]['ACCButtons']
 
@@ -79,7 +78,7 @@ class CarState(object):
     self.v_wheel_fr = pt_cp.vl["EBCMWheelSpdFront"]['FRWheelSpd'] * CV.KPH_TO_MS
     self.v_wheel_rl = pt_cp.vl["EBCMWheelSpdRear"]['RLWheelSpd'] * CV.KPH_TO_MS
     self.v_wheel_rr = pt_cp.vl["EBCMWheelSpdRear"]['RRWheelSpd'] * CV.KPH_TO_MS
-    v_wheel = float(np.mean([self.v_wheel_fl, self.v_wheel_fr, self.v_wheel_rl, self.v_wheel_rr]))
+    v_wheel = mean([self.v_wheel_fl, self.v_wheel_fr, self.v_wheel_rl, self.v_wheel_rr])
 
     if abs(v_wheel - self.v_ego) > 2.0:  # Prevent large accelerations when car starts at non zero speed
       self.v_ego_kf.x = [[v_wheel], [0.0]]
@@ -117,7 +116,6 @@ class CarState(object):
     self.steer_error = False
 
     self.brake_error = False
-    self.can_valid = True
 
     self.prev_left_blinker_on = self.left_blinker_on
     self.prev_right_blinker_on = self.right_blinker_on
