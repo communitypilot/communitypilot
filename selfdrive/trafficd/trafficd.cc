@@ -20,6 +20,9 @@ int main(){
                 printf("trafficd: visionstream  failed\n");
                 break;
             }
+			else {
+				traffic_lights_sock->send(buf., 8);
+			}
         
 		}
 
