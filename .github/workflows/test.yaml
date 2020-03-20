@@ -77,7 +77,6 @@ jobs:
           $RUN "$UNIT_TEST opendbc/can"
           $RUN "$UNIT_TEST selfdrive/boardd"
           $RUN "$UNIT_TEST selfdrive/controls"
-          $RUN "$UNIT_TEST selfdrive/loggerd"
           $RUN "$UNIT_TEST selfdrive/car"
           $RUN "$UNIT_TEST selfdrive/locationd"
           $RUN "$UNIT_TEST selfdrive/athena"
