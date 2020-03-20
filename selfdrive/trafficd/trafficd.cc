@@ -19,7 +19,7 @@ int main() {
     }
     break;
   }
-
+  while(True){
   VIPCBufExtra extra;
   VIPCBuf* buf = visionstream_get(&stream, &extra);
   if (buf == NULL) {
@@ -60,6 +60,8 @@ int main() {
   FILE *fp = fopen(filename, "wb");
   svpng(fp, width, height, rgb, 0);
   fclose(fp);
+  usleep(40 *1000000)
+  } 
 
   return 0;
 }
