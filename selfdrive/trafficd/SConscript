@@ -1,0 +1,19 @@
+Import('env', 'arch', 'messaging', 'common', 'gpucommon', 'visionipc')
+lenv = env.Clone()
+
+libs = [messaging, common, 'OpenCL', 'SNPE', 'capnp', 'zmq', 'kj', 'yuv', gpucommon, visionipc]
+
+
+if arch == "aarch64":
+  libs += ['gsl', 'CB', 'gnustl_shared']
+else:
+  libs += ['symphony-cpu', 'pthread']
+
+  if FindFile('libtensorflow.so', env['LIBPATH']):
+    # for tensorflow support
+    libs += ['tensorflow']
+    # tell runners to use it
+    lenv['CFLAGS'].append("-DUSE_TF_MODEL")
+    lenv['CXXFLAGS'].append("-DUSE_TF_MODEL")
+
+lenv.Program(target='trafficd', source=["trafficd.cc"], LIBS=libs)
