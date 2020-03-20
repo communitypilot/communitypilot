@@ -1,21 +1,18 @@
-#include <cstdio>
 #include <cstdlib>
-#include <cstdint>
 #include <unistd.h>
+#include <ctime>
 
-#include <zmq.h>
-
+#include "common/visionbuf.h"
 #include "common/visionipc.h"
-#include "common/timing.h"
+
+#include "svpng.inc"
 
 int main() {
-  int err;
-  double t1 = millis_since_boot();
   VisionStream stream;
 
   VisionStreamBufs buf_info;
   while (true) {
-    err = visionstream_init(&stream, VISION_STREAM_RGB_BACK, true, &buf_info);
+    int err = visionstream_init(&stream, VISION_STREAM_YUV, true, &buf_info);
     if (err != 0) {
       printf("visionstream fail\n");
       usleep(100000);
@@ -30,49 +27,39 @@ int main() {
     return 1;
   }
 
-  double t2 = millis_since_boot();
+  int width = buf_info.width;
+  int height = buf_info.height;
 
-  printf("fetch time:   %.2f\n", (t2-t1));
+  uint8_t *y = (uint8_t *)buf->addr;
+  uint8_t *u = y + (width * height);
+  uint8_t *v = u + ((width * height) / 4);
 
-  //int image_width = 1164;
-  //int image_height = 874;
-  //int image_stride = 3840;
-  //int padding = 348;
+  int r, g, b;
+  uint8_t* rgb = (uint8_t*)calloc((width * height * 3), sizeof(uint8_t));
+  uint8_t* rgb_ptr = rgb;
 
-  //void* img = malloc(image_height * image_width * 3);
-  void* img = malloc(3052008);
-  uint8_t *dst_ptr = (uint8_t *)img;
-  uint8_t *src_ptr = (uint8_t *)buf->addr;
+  for (int j = 0; j < height; j++) {
+    for (int i = 0; i < width; i++) {
+      int yy = y[(j * width) + i];
+      int uu = u[((j / 2) * (width / 2)) + (i / 2)];
+      int vv = v[((j / 2) * (width / 2)) + (i / 2)];
 
-  // 1280 stride 116 padding
-  for(int line=0;line<=874;line++) {
-    for(int line_pos=0;line_pos<=3492;line_pos+=3) {
-      dst_ptr[line_pos + 0] = src_ptr[line_pos + 2];
-      dst_ptr[line_pos + 1] = src_ptr[line_pos + 1];
-      dst_ptr[line_pos + 2] = src_ptr[line_pos + 0];
+      *rgb_ptr++ = 1.164 * (yy - 16) + 1.596 * (vv - 128);
+      *rgb_ptr++ = 1.164 * (yy - 16) - 0.813 * (vv - 128) - 0.391 * (uu - 128);
+      *rgb_ptr++ = 1.164 * (yy - 16) + 2.018 * (uu - 128);
     }
-    dst_ptr += 3492;
-    src_ptr += 3840;
   }
 
-  double t3 = millis_since_boot();
+  time_t curr_time = time(NULL);
+	tm * curr_tm = localtime(&curr_time);
+  char timestamp[14];
+  char filename[22];
+  strftime(timestamp, 15, "%Y%m%d%H%M%S", curr_tm);
+  sprintf(filename, "%s.png", timestamp);
 
-  printf("process time: %.2f\n", (t3-t2));
-
-  FILE *f = fopen("./test", "wb");
-  fwrite((uint8_t *)img, 1, 3052008, f);
-  free(img);
-  fclose(f);
-
-  double t4 = millis_since_boot();
-
-  printf("write time:   %.2f\n", (t4-t3));
-
-  visionstream_destroy(&stream);
-
-  double t5 = millis_since_boot();
-
-  printf("total time:   %.2f\n", (t5-t1));
+  FILE *fp = fopen(filename, "wb");
+  svpng(fp, width, height, rgb, 0);
+  fclose(fp);
 
   return 0;
 }
