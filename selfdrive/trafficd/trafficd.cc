@@ -5,8 +5,6 @@
 #include <chrono>
 #include <thread>
 
-#include <highgui.h>
-
 #include "cereal/gen/cpp/log.capnp.h"
 #include <capnp/message.h>
 #include <capnp/serialize.h>
