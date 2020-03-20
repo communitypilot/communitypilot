@@ -1,5 +1,8 @@
 #include <trafficd.h>
 #include <cassert>
+#include <iostream>
+using namespace std;
+
 volatile __sig_atomic_t do_exit = 0;
 int main(){
 	VisionStream stream;
