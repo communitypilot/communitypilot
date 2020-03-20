@@ -60,7 +60,7 @@ int main() {
   FILE *fp = fopen(filename, "wb");
   svpng(fp, width, height, rgb, 0);
   fclose(fp);
-  usleep(40 *1000000);
+  usleep(40 *10);
   cout << "New image" << endl;
   } 
 
