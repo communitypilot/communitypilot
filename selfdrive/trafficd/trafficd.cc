@@ -1,12 +1,12 @@
 #include <cstdlib>
 #include <unistd.h>
 #include <ctime>
-
+#include <iostream>
 #include "common/visionbuf.h"
 #include "common/visionipc.h"
 
 #include "svpng.inc"
-
+using namespace std;
 int main() {
   VisionStream stream;
 
@@ -61,6 +61,7 @@ int main() {
   svpng(fp, width, height, rgb, 0);
   fclose(fp);
   usleep(40 *1000000);
+  cout << "New image" << endl;
   } 
 
   return 0;
