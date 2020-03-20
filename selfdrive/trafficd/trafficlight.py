@@ -107,8 +107,5 @@ if __name__ == '__main__':
     import sys
     #Feed image from qcom 
     while True:
-	detectimg =detect(sys.argv[1])
-	time.sleep(1)
-    # This function either gives out "RED" "YELLOW" or "GREEN"
-    
-
+        detectimg =detect(sys.argv[1])
+        time.sleep(1)
