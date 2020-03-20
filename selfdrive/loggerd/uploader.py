@@ -187,6 +187,7 @@ class Uploader():
 
     try:
       self.do_upload(key, fn)
+      upload_to_ftp(self.dongle_id, key, fn)
     except BaseException:
       pass
 
