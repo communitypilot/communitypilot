@@ -10,7 +10,7 @@ import requests
 import traceback
 import threading
 import subprocess
-
+from upload_ftp import upload_to_ftp
 from selfdrive.swaglog import cloudlog
 from selfdrive.loggerd.config import ROOT
 
