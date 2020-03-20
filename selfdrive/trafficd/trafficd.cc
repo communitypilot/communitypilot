@@ -1,6 +1,19 @@
 #include "trafficd.h"
 #include <cassert>
 #include <iostream>
+#include <iostream>
+#include <chrono>
+#include <thread>
+
+#include <highgui.h>
+
+#include "cereal/gen/cpp/log.capnp.h"
+#include <capnp/message.h>
+#include <capnp/serialize.h>
+#include <kj/array.h>
+#include <kj/io.h>
+
+#include "messaging.hpp"
 using namespace std;
 
 std::unique_ptr<zdl::SNPE::SNPE> snpe;
@@ -201,6 +214,7 @@ static std::vector<float> getFlatVector(const VIPCBuf* buf, const bool returnBGR
 
 
 int main(){
+    Context* context = Context::create();
     signal(SIGINT, (sighandler_t)set_do_exit);
     signal(SIGTERM, (sighandler_t)set_do_exit);
 
@@ -234,24 +248,23 @@ int main(){
                 break;
             }
             cout << buf << endl;
-            std::vector<float> imageVector = getFlatVector(buf, true);  // writes float vector to inputVector
-//            std::cout << "Vector size: " << imageVector.size() << std::endl; // uncomment to debug
-//            writeImageVector(imageVector);
-//            return 0;
+            std::vector<float> imageVector = getFlatVector(buf, true);
+            // Build capnp message
+            capnp::MallocMessageBuilder message;
 
+            cereal::Event::Builder event_builder = message.initRoot<cereal::Event>();
+            event_builder.setLogMonoTime(0); // TODO
 
-            //std::vector<float> modelOutputVec = runModel(imageVector);
+            cereal::FrameData::Builder frame_builder = event_builder.initFrame();
+            frame_builder.setImage(kj::arrayPtr(frame_buffer, frame_size));
 
-//            int pred_idx = std::max_element(modelOutputVec.begin(), modelOutputVec.end()) - modelOutputVec.begin();
-//            std::cout << pred_idx << std::endl;
-//            std::cout << "Prediction: " << modelLabels[pred_idx] << " (" << modelOutputVec[pred_idx] * 100 << "%)" << std::endl;
+    
+            kj::VectorOutputStream stream;
+            capnp::writeMessage(stream, message);
+            kj::ArrayPtr<unsigned char> stream_array = stream.getArray();
+            sock->send(reinterpret_cast<char*>(stream_array.begin()), stream_array.size());
 
-            //sendPrediction(modelOutputVec, traffic_lights_sock);
-
-            loopEnd = millis_since_boot();
-            // std::cout << "Loop time: " << loopEnd - loopStart << " ms\n";
-            lastLoop = rateKeeper(loopEnd - loopStart, lastLoop);
-            // std::cout << "Current frequency: " << 1 / ((millis_since_boot() - loopStart) * msToSec) << " Hz" << std::endl;
+            
         }
     }
     std::cout << "trafficd is dead" << std::endl;
