@@ -16,8 +16,6 @@ os.environ['BASEDIR'] = BASEDIR
 
 TOTAL_SCONS_NODES = 1195
 prebuilt = os.path.exists(os.path.join(BASEDIR, 'prebuilt'))
-import sentry_sdk
-sentry_sdk.init("https://b278b2ca96284980b48224e236e4f4a4@sentry.io/5168387")
 
 # Create folders needed for msgq
 try:
