@@ -99,12 +99,13 @@ void sendPrediction(std::vector<float> modelOutputVec, PubSocket* traffic_lights
     capnp::MallocMessageBuilder msg;
     cereal::Event::Builder event = msg.initRoot<cereal::Event>();
     event.setLogMonoTime(nanos_since_boot());
+    /*
     auto traffic_lights = event.initTrafficModelRaw();
     traffic_lights.setPrediction(modelOutput_vs);
 
     auto words = capnp::messageToFlatArray(msg);
     auto bytes = words.asBytes();
-    traffic_lights_sock->send((char*)bytes.begin(), bytes.size());
+    traffic_lights_sock->send((char*)bytes.begin(), bytes.size()); */
 }
 
 std::vector<float> runModel(std::vector<float> inputVector) {
