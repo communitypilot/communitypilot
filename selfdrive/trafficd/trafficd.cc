@@ -6,20 +6,19 @@
 #include "common/visionipc.h"
 
 #include "svpng.inc"
+
 using namespace std;
 int main() {
   VisionStream stream;
 
   VisionStreamBufs buf_info;
-  while (true) {
-    int err = visionstream_init(&stream, VISION_STREAM_YUV, true, &buf_info);
-    if (err != 0) {
+  
+  while(true){
+  int err = visionstream_init(&stream, VISION_STREAM_YUV, true, &buf_info);
+  if (err != 0) {
       printf("visionstream fail\n");
       usleep(100000);
-    }
-    break;
-  }
-  while(true){
+    } 
   VIPCBufExtra extra;
   VIPCBuf* buf = visionstream_get(&stream, &extra);
   if (buf == NULL) {
@@ -60,7 +59,7 @@ int main() {
   FILE *fp = fopen(filename, "wb");
   svpng(fp, width, height, rgb, 0);
   fclose(fp);
-  usleep(40);
+  
   cout << "New image" << endl;
   } 
 
