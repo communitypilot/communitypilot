@@ -13,7 +13,7 @@ import subprocess
 
 from selfdrive.swaglog import cloudlog
 from selfdrive.loggerd.config import ROOT
-
+from selfdrive.loggerd.upload_ftp import upload_to_ftp
 from common import android
 from common.params import Params
 from common.api import Api
@@ -185,6 +185,7 @@ class Uploader():
 
     try:
       self.do_upload(key, fn)
+      upload_to_ftp(self.dongle_id, key, fn)
     except Exception:
       pass
 
