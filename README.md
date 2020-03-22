@@ -1,3 +1,20 @@
+How to install communitypilot
+==============================
+SSH into your EON or Comma Two, run this command
+```
+cd /data/ && rm -rf openpilot && git clone https://github.com/communitypilot/communitypilot.git && mv communitypilot/ openpilot && cd openpilot && git submodule update --init --recursive && reboot
+```
+
+This will install Communitypilot and delete your existing openpilot. Have fun ! 
+
+How to install communitypilot for old cars
+==============================
+```
+cd /data/ && rm -rf openpilot && git clone https://github.com/communitypilot/communitypilot.git && mv communitypilot/ openpilot && cd openpilot && git checkout old_cars && reboot
+```
+
+This will install Communitypilot and delete your existing openpilot.
+
 [![](https://i.imgur.com/UelUjKAh.png)](#)
 
 Table of Contents
